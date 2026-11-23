@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PNGTuber Gatito Gamer</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    .stage {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .avatar-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.08s ease-out;
+      will-change: transform;
+    }
+
+    .avatar-wrap img {
+      max-width: 92vw;
+      max-height: 92vh;
+      object-fit: contain;
+      user-select: none;
+      -webkit-user-drag: none;
+      filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.25));
+    }
+
+    .avatar-wrap.talking {
+      transform: translateY(-10px) scale(1.03);
+    }
+
+    /* Panel de control discreto (se oculta automáticamente al pasar el mouse o pulsar H) */
+    .controls {
+      position: fixed;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(18, 16, 28, 0.88);
+      color: #fff;
+      padding: 10px 16px;
+      border-radius: 14px;
+      border: 1px solid rgba(168, 85, 247, 0.45);
+      backdrop-filter: blur(8px);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      font-size: 13px;
+      z-index: 20;
+      transition: opacity 0.25s ease;
+    }
+
+    .controls.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    button {
+      background: #7c3aed;
+      color: #fff;
+      border: none;
+      padding: 7px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    button:hover {
+      background: #6d28d9;
+    }
+
+    label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    input[type="range"] {
+      width: 85px;
+      accent-color: #a855f7;
+    }
+
+    .meter {
+      width: 70px;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .meter-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #38bdf8, #c084fc);
+      transition: width 0.05s linear;
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <div id="avatarWrap" class="avatar-wrap">
+      <img id="avatarImg" src="8147.jpg" alt="PNGTuber Expression" />
+    </div>
+  </div>
+
+  <div id="controls" class="controls">
+    <button id="micBtn" type="button">Activar Micrófono</button>
+
+    <label>
+      Sensibilidad
+      <input id="thresholdInput" type="range" min="1" max="60" value="12" />
+      <span id="thresholdVal">12</span>
+    </label>
+
+    <div class="meter" title="Nivel de audio">
+      <div id="meterFill" class="meter-fill"></div>
+    </div>
+
+    <button id="testTalkBtn" type="button">Probar Hablar</button>
+    <button id="hideUiBtn" type="button">Ocultar (H)</button>
+  </div>
+
+  <script>
+    const IMAGES = {
+      idleOpen: "8147.jpg",    // Ojos abiertos + boca cerrada
+      idleClosed: "8148.jpg",  // Ojos cerrados + boca cerrada
+      talkClosed: "8149.jpg",  // Ojos cerrados + boca abierta
+      talkOpen: "8151.jpg"     // Ojos abiertos + boca abierta
+    };
+
+    // Precargar imágenes para que el cambio sea instantáneo sin parpadeos blancos
+    Object.values(IMAGES).forEach((src) => {
+      const preload = new Image();
+      preload.src = src;
+    });
+
+    const avatarImg = document.getElementById("avatarImg");
+    const avatarWrap = document.getElementById("avatarWrap");
+    const micBtn = document.getElementById("micBtn");
+    const thresholdInput = document.getElementById("thresholdInput");
+    const thresholdVal = document.getElementById("thresholdVal");
+    const meterFill = document.getElementById("meterFill");
+    const testTalkBtn = document.getElementById("testTalkBtn");
+    const hideUiBtn = document.getElementById("hideUiBtn");
+    const controls = document.getElementById("controls");
+
+    let isTalking = false;
+    let isBlinking = false;
+    let manualTalking = false;
+    let audioContext = null;
+    let analyser = null;
+    let micActive = false;
+
+    function renderExpression() {
+      const talkingNow = isTalking || manualTalking;
+      avatarWrap.classList.toggle("talking", talkingNow);
+
+      let nextSrc = IMAGES.idleOpen;
+      if (talkingNow && isBlinking) {
+        nextSrc = IMAGES.talkClosed;
+      } else if (talkingNow && !isBlinking) {
+        nextSrc = IMAGES.talkOpen;
+      } else if (!talkingNow && isBlinking) {
+        nextSrc = IMAGES.idleClosed;
+      } else {
+        nextSrc = IMAGES.idleOpen;
+      }
+
+      if (avatarImg.getAttribute("src") !== nextSrc) {
+        avatarImg.setAttribute("src", nextSrc);
+      }
+    }
+
+    // Parpadeo automático cada pocos segundos
+    function scheduleBlink() {
+      const nextDelay = 2200 + Math.random() * 3200;
+      setTimeout(() => {
+        isBlinking = true;
+        renderExpression();
+
+        setTimeout(() => {
+          isBlinking = false;
+          renderExpression();
+          scheduleBlink();
+        }, 150);
+      }, nextDelay);
+    }
+
+    thresholdInput.addEventListener("input", () => {
+      thresholdVal.textContent = thresholdInput.value;
+    });
+
+    // Botón para probar sin micrófono
+    testTalkBtn.addEventListener("mousedown", () => {
+      manualTalking = true;
+      renderExpression();
+    });
+    window.addEventListener("mouseup", () => {
+      if (manualTalking) {
+        manualTalking = false;
+        renderExpression();
+      }
+    });
+
+    // Ocultar / mostrar controles con la tecla H
+    function toggleUI() {
+      controls.classList.toggle("hidden");
+    }
+    hideUiBtn.addEventListener("click", toggleUI);
+    window.addEventListener("keydown", (e) => {
+      if (e.key.toLowerCase() === "h") toggleUI();
+    });
+
+    // Activar micrófono con Web Audio API
+    async function startMicrophone() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          },
+          video: false
+        });
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.65;
+        source.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        micActive = true;
+        micBtn.textContent = "Micrófono Activo";
+
+        function updateVolume() {
+          if (!micActive || !analyser) return;
+
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const avg = sum / dataArray.length; // ~0 a 255
+          const levelPercent = Math.min(100, Math.round((avg / 90) * 100));
+          meterFill.style.width = levelPercent + "%";
+
+          const threshold = Number(thresholdInput.value);
+          // Pequeña histéresis para evitar que parpadee rápido en el borde del umbral
+          if (!isTalking && avg > threshold) {
+            isTalking = true;
+            renderExpression();
+          } else if (isTalking && avg < threshold * 0.72) {
+            isTalking = false;
+            renderExpression();
+          }
+
+          requestAnimationFrame(updateVolume);
+        }
+
+        updateVolume();
+      } catch (err) {
+        alert("No se pudo acceder al micrófono. Revisa los permisos del navegador.");
+        console.error(err);
+      }
+    }
+
+    micBtn.addEventListener("click", () => {
+      if (!micActive) {
+        startMicrophone();
+      }
+    });
+
+    scheduleBlink();
+    renderExpression();
+  </script>
+</body>
+</html>
